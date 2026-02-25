@@ -1,0 +1,104 @@
+name: 'NadirClaw LLM Router'
+description: 'Start NadirClaw proxy to route CI LLM calls through intelligent model selection. Save 50-70% on AI-powered workflows.'
+author: 'doramirdor'
+
+branding:
+  icon: 'zap'
+  color: 'purple'
+
+inputs:
+  version:
+    description: 'NadirClaw version (e.g., "0.4.2" or "latest")'
+    required: false
+    default: 'latest'
+  port:
+    description: 'Port for the NadirClaw proxy'
+    required: false
+    default: '8856'
+  premium-model:
+    description: 'Model for complex prompts'
+    required: false
+    default: 'claude-sonnet-4-20250514'
+  cheap-model:
+    description: 'Model for simple prompts'
+    required: false
+    default: 'gemini-2.5-flash'
+  reasoning-model:
+    description: 'Model for chain-of-thought tasks'
+    required: false
+    default: 'o3'
+  openai-api-key:
+    description: 'OpenAI API key (or set OPENAI_API_KEY env)'
+    required: false
+  anthropic-api-key:
+    description: 'Anthropic API key (or set ANTHROPIC_API_KEY env)'
+    required: false
+  google-api-key:
+    description: 'Google AI API key (or set GOOGLE_API_KEY env)'
+    required: false
+  startup-timeout:
+    description: 'Seconds to wait for proxy to start'
+    required: false
+    default: '30'
+
+outputs:
+  base-url:
+    description: 'OPENAI_BASE_URL pointing to NadirClaw proxy'
+    value: ${{ steps.export.outputs.base-url }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install NadirClaw
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          pip install nadirclaw
+        else
+          pip install nadirclaw==${{ inputs.version }}
+        fi
+
+    - name: Configure
+      shell: bash
+      run: |
+        mkdir -p ~/.nadirclaw
+        cat > ~/.nadirclaw/.env << EOF
+        NADIRCLAW_SIMPLE_MODEL=${{ inputs.cheap-model }}
+        NADIRCLAW_COMPLEX_MODEL=${{ inputs.premium-model }}
+        NADIRCLAW_REASONING_MODEL=${{ inputs.reasoning-model }}
+        NADIRCLAW_PORT=${{ inputs.port }}
+        EOF
+
+    - name: Set API keys
+      shell: bash
+      run: |
+        [ -n "${{ inputs.openai-api-key }}" ] && echo "OPENAI_API_KEY=${{ inputs.openai-api-key }}" >> $GITHUB_ENV
+        [ -n "${{ inputs.anthropic-api-key }}" ] && echo "ANTHROPIC_API_KEY=${{ inputs.anthropic-api-key }}" >> $GITHUB_ENV
+        [ -n "${{ inputs.google-api-key }}" ] && echo "GOOGLE_API_KEY=${{ inputs.google-api-key }}" >> $GITHUB_ENV
+        true
+
+    - name: Start proxy
+      shell: bash
+      run: |
+        nadirclaw serve --port ${{ inputs.port }} &
+        NADIRCLAW_PID=$!
+        echo "NADIRCLAW_PID=$NADIRCLAW_PID" >> $GITHUB_ENV
+
+        TIMEOUT=${{ inputs.startup-timeout }}
+        ELAPSED=0
+        until curl -sf http://localhost:${{ inputs.port }}/health > /dev/null 2>&1; do
+          sleep 1
+          ELAPSED=$((ELAPSED + 1))
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "::error::NadirClaw failed to start within ${TIMEOUT}s"
+            exit 1
+          fi
+        done
+        echo "::notice::NadirClaw running on port ${{ inputs.port }} (PID $NADIRCLAW_PID)"
+
+    - name: Export environment
+      id: export
+      shell: bash
+      run: |
+        echo "OPENAI_BASE_URL=http://localhost:${{ inputs.port }}/v1" >> $GITHUB_ENV
+        echo "base-url=http://localhost:${{ inputs.port }}/v1" >> $GITHUB_OUTPUT
